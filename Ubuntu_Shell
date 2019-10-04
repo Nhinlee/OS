@@ -1,0 +1,230 @@
+#include <stdio.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <string.h>
+
+
+#define MAX 80 /*the maximum length command*/
+/*I'm support for advanced code :))*/
+
+char history[10][MAX];
+struct ARGS{
+    char *args1[MAX/2+1], *args2[MAX/2 +1], operate;
+};
+void GetInp(char *s, struct ARGS *a, int *iswait)
+{
+    //Update history first:
+    if(strcmp("!!",s)!=0){
+        for(int j=9;j>0;j--)
+        {
+            strcpy(history[j],history[j-1]);
+        }
+        strcpy(history[0],s);
+    }
+    //check operator:
+    int op=-1;
+    if (strchr(s,'>') || strchr(s,'<') || strchr(s,'|'))
+        {
+            op=1;
+            int n = strlen(s);
+            for(int i=0;i<n;i++)
+            {
+                switch(s[i])
+                {
+                    case ' ': {op++;break;}
+                    case '>': {a->operate = '>';break;}
+                    case '<': {a->operate = '<';break;}
+                    case '|': {a->operate =  '|';break;};
+                    default:break;
+                }
+            }
+        }
+
+
+    int i=0;
+    char signal[] = "\n><| ";
+    char * token = strtok(s,signal);
+    while(token!=NULL)
+    {
+        a->args1[i++]=token;
+        token = strtok(NULL,signal);
+    }
+
+    //If have & --> this parent process will wait for child process run completed.
+    if(strchr(a->args1[i-1],'&')==NULL)
+        *iswait = 1;
+    a->args1[i]=NULL;
+
+    //This for Redirect and Pipe:
+    if(op !=-1)
+    {
+        int k=0;
+        while(a->args1[op]!=NULL)
+        {
+            a->args2[k++]=a->args1[op];
+            a->args1[op]=NULL;
+            op++;
+        }
+        a->args2[k]=NULL;
+    }
+}
+
+void Showhist()
+{
+    if(strlen(history[0])==0)
+    {
+        printf("No commands in history\n");
+        return;
+    }
+    else {
+        for(int i=9;i>=0;i--)
+        {
+            if(strlen(history[i])!=0)
+                printf("%s\n",history[i]);
+        }
+    }
+}
+
+void ExecArgs(char **args, int iswait)
+{
+    if(strcmp(args[0],"!!")==0)
+    {
+        Showhist();
+        return;
+    }
+
+    //Forking a child process;
+    int pid = fork();
+
+    if(pid == -1)
+    {
+        printf("Failure on working with child process\n");
+        exit(0);
+    }else if (pid ==0){
+        if(execvp(args[0],args)==-1 && strcmp(args[0],"!!")!=0){
+            printf("couldn't execute! somthings wrong happen here.\n");
+        }
+        exit(0);
+    }else{
+        if(iswait)
+            wait(NULL);
+        return;
+    }
+}
+
+void ExecD(char **args, int io, int mode)
+{
+    int pid = fork();
+
+    if(pid == -1)
+    {
+        printf("Failure on working with child process\n");
+        exit(0);
+    }else if (pid ==0){
+        dup2(io,mode);
+        if(execvp(args[0],args)==-1){
+            printf("couldn't execute! somthings wrong happen here.\n");
+        }
+        exit(0);
+    }else{
+        wait(NULL);
+        return;
+    }
+}
+
+void ExecDup2(struct ARGS *a, int iswait)
+{
+    int in, out;
+    if(a->operate == '>')
+    {
+        out = open(a->args2[0], O_WRONLY | O_TRUNC | O_CREAT, S_IRUSR | S_IRGRP | S_IWGRP | S_IWUSR);
+        // replace standard output with my output target;
+        ExecD(a->args1,out,1);
+        close(out);
+    }
+    else if(a->operate == '<')
+    {
+        in = open(a->args2[0], O_RDONLY);
+        // replace standard input with my input resource;
+        ExecD(a->args1,in,0);
+        close(in);
+    }
+}
+
+//Resources of this function on this website:
+//https://www.geeksforgeeks.org/making-linux-shell-c/?fbclid=IwAR1wqf5DvfupHLdECGt44BpLKC-QkBdgypkOjRmhd6Fg6KMEN9PnmdnJwK4
+void ExecPipe(struct ARGS *a){
+    // 0 is read end, 1 is write end
+    int pipefd[2], p1, p2;
+
+    if (pipe(pipefd) < 0) {
+        printf("\nPipe could not be initialized");
+        return;
+    }
+    p1 = fork();
+    if (p1 < 0) {
+        printf("Failure on working with child process\n");
+        return;
+    }
+
+    if (p1 == 0) {
+        // Child 1 executing..
+        // It only needs to write at the write end
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+
+        if (execvp(a->args1[0],a->args1) < 0) {
+            printf("\nCould not execute command 1..");
+            exit(0);
+        }
+    } else {
+        // Parent executing
+        p2 = fork();
+
+        if (p2 < 0) {
+            printf("Failure on working with child process\n");
+            return;
+        }
+
+        // Child 2 executing..
+        // It only needs to read at the read end
+        if (p2 == 0) {
+            close(pipefd[1]);
+            dup2(pipefd[0], STDIN_FILENO);
+            close(pipefd[0]);
+            if (execvp(a->args2[0],a->args2) < 0) {
+                printf("\nCould not execute command 2..");
+                exit(0);
+            }
+        } else {
+            // parent executing, waiting for two children
+            wait(NULL);
+            wait(NULL);
+        }
+    }
+}
+int main()
+{
+    struct ARGS a; /*command line arguments*/
+    char inpstring[MAX +1];
+    int endprocess =0,iswait = 0, dup2_pipe = 0;
+    while(!endprocess)
+    {
+        printf("osh>");
+        fflush(stdout);
+
+        gets(inpstring);
+        GetInp(inpstring, &a, &iswait);
+        if (a.operate =='>' || a.operate == '<')
+            ExecDup2(&a,iswait);
+        else if(a.operate == '|')
+            ExecPipe(&a);
+        else ExecArgs(a.args1,iswait);
+        //end;
+    }
+    printf("osh>");
+    return 0;
+}
